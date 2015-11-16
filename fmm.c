@@ -62,25 +62,16 @@ void MemoryStatus(double *a, double *w, double *i, double *u, double *t) {
     printf("%1.fMB\033[%1.fC%1.fMB\033[%1.fC%1.fMB\033[%1.fC%1.fMB\n",
         *a, loop_a - digits((int)*a) - 3, *w, loop_w - digits((int)*w) - 3, *i, loop_i - digits((int)*i) - 2, *u);
 
-    printf("\e[43m");
-    while (cnt++ < loop_a - 1) printf(" ");
-    printf("\e[0m");
+    while (cnt++ < loop_a - 1) printf("\e[43m ");
 
     cnt ^= cnt;
-    printf("\e[41m");
-    while (cnt++ < loop_w - 1) printf(" ");
-    printf("\e[0m");
-
+    while (cnt++ < loop_w - 1) printf("\e[41m ");
 
     cnt ^= cnt;
-    printf("\e[44m");
-    while (cnt++ < loop_i) printf(" ");
-    printf("\e[0m");
-
+    while (cnt++ < loop_i) printf("\e[44m ");
 
     cnt ^= cnt;
-    printf("\e[42m");
-    while (cnt++ < loop_u) printf(" ");
+    while (cnt++ < loop_u) printf("\e[42m ");
     printf("\e[49m\n");
 
     printf("Active\033[%1.fCWired\033[%1.fCInactive\033[%1.fCFree\n",
@@ -93,7 +84,6 @@ void MemoryStatus(double *a, double *w, double *i, double *u, double *t) {
         inactive is blue \e[44m
         reset color \e[0m
         return color \e[49m
-
         [yellow red blue green]
     */
 }
@@ -115,26 +105,17 @@ int main(int argc, char const *argv[]) {
     
     if (KERN_SUCCESS == host_statistics64(mach_port, HOST_VM_INFO,
                                         (host_info64_t)&vm_stat, &count)) {
-        
-
+ 
         double active = vm_stat.active_count * pagesize / unit; // Pages active
-        //printf("active: %1.fMB\n", active);
-
         double inactive = vm_stat.inactive_count * pagesize / unit; // Pages inactive
-        //printf("inactive: %1.fMB\n", inactive);
-
         double wired = vm_stat.wire_count * pagesize / unit; // Pages wired down
-        //printf("wired: %1.fMB\n", wired); // passed
-
-        
-        double unused = vm_stat.free_count * pagesize / unit;
-        //printf("PhysUnused: %1.fMB\n", unused);
-
+        double speculative = vm_stat.speculative_count * pagesize / unit;
+        double free = vm_stat.free_count * pagesize / unit;
         double compressor = vm_stat.compressor_page_count * pagesize / unit;
-        //printf("Compressor: %1.fMB\n", compressor);
+        double unused = free + speculative;
 
         double total = wired + active + inactive + compressor + unused;
-        //printf("total: %1.fMB\n", total);
+        printf("total: %1.fMB\n", total);
 
         MemoryStatus(&active, &wired, &inactive, &unused, &total);
         
@@ -146,10 +127,8 @@ int main(int argc, char const *argv[]) {
 /*
     How to calculate total physical memory 
     http://opensource.apple.com/source/top/top-100.1.2/globalstats.c
-
     Look up this
     http://www.opensource.apple.com/source/xnu/xnu-1456.1.26/osfmk/mach/vm_statistics.h
-
     double free = (vm_stat.free_count - vm_stat.speculative_count) * pagesize / unit; // Pages free
     double decompressions = vm_stat.decompressions; // Decompressions
     double compressions = vm_stat.compressions; // Compressions
