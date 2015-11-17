@@ -2,32 +2,41 @@
 #include <stdlib.h>
 
 #include <mach/mach.h>
-#include <mach/host_info.h>
 
-#include <string.h>
 #include <errno.h>
-#include <unistd.h>
-
-
+#include <unistd.h> // page size
 #include <sys/sysctl.h> // total size
 #include <sys/ioctl.h> // terminal width
-
 #include "fmm.h"
+
 #define LINE_LENGTH 80
 
-int64_t getPageSize() {
-    int64_t pagesize;
-    size_t mem_len = sizeof(pagesize);
-    int query[2];
+typedef struct vm {
+    double pagesize;
+    double active; // Pages active
+    double inactive; // Pages inactive
+    double wired; // Pages wired down
+    double speculative; // Pages speculative
+    double free; // Pages free
+    double compressor; // Pages occupied by compressor
+    double unused; // free - speculative
+    struct vm *next;
+} data64_vm;
 
-    query[0] = CTL_HW;
-    query[1] = HW_PAGESIZE; /* OSX */
-    int result = sysctl(query, 2, &pagesize, &mem_len, NULL, 0);
-    if(result == -1) {
-        perror("sysctl");
+data64_vm vmdata;
+
+static 
+vm_statistics64_data_t getVMinfo() {
+    vm_statistics64_data_t vm_stat;
+    mach_port_t mach_port = mach_host_self();
+    mach_msg_type_number_t count = HOST_VM_INFO_COUNT;
+
+    if (KERN_SUCCESS != host_statistics64(mach_port, HOST_VM_INFO,
+                                        (host_info64_t)&vm_stat, &count)) {
+        perror("host_statistics64");
         exit(-1);
     }
-    return pagesize;
+    return vm_stat;
 }
 
 int getWidth() {
@@ -40,42 +49,25 @@ int getWidth() {
     return (0 < ws.ws_col && ws.ws_col == (int)ws.ws_col) ? ws.ws_col : LINE_LENGTH;
 }
 
-int digits(int num) {
+void MemoryStatus(double a, double w, double i, double u, double t) {
 
-    int digit = 0;
-    while(num != 0){
-        num = num / 10;
-        ++digit;
-    }
-
-    return digit;
-}
-
-void MemoryStatus(double *a, double *w, double *i, double *u, double *t) {
-
-    int cnt = 0;
     int width = getWidth();
-    double loop_a = *a / *t * width;
-    double loop_w = *w / *t * width;
-    double loop_i = *i / *t * width;
-    double loop_u = *u / *t * width;
-    printf("%1.fMB\033[%1.fC%1.fMB\033[%1.fC%1.fMB\033[%1.fC%1.fMB\n",
-        *a, loop_a - digits((int)*a) - 3, *w, loop_w - digits((int)*w) - 3, *i, loop_i - digits((int)*i) - 2, *u);
+    double loop_a = a / t * width;
+    double loop_w = w / t * width;
+    double loop_i = i / t * width;
+    double loop_u = u / t * width;
+    printf("%1.f\n", loop_u + loop_i + loop_w + loop_a);
+    printf("\e[43m\e[97mActive  : %*.fMB\e[49m "
+           "\e[41m\e[97mWired   : %*.fMB\e[49m "
+           "\e[44m\e[97minactive: %*.fMB\e[49m "
+           "\e[42m\e[97mFree    : %*.fMB\e[49m\n", 4, a, 4, w, 4, i, 4, u);
 
-    while (cnt++ < loop_a - 1) printf("\e[43m ");
+    printf("\e[43m%*s", (int)loop_a, " ");
+    printf("\e[41m%*s", (int)loop_w, " ");
+    printf("\e[44m%*s", (int)loop_i, " ");
+    printf("\e[42m%*s\e[49m\n", (int)loop_u, " ");
 
-    cnt ^= cnt;
-    while (cnt++ < loop_w - 1) printf("\e[41m ");
-
-    cnt ^= cnt;
-    while (cnt++ < loop_i) printf("\e[44m ");
-
-    cnt ^= cnt;
-    while (cnt++ < loop_u) printf("\e[42m ");
-    printf("\e[49m\n");
-
-    printf("Active\033[%1.fCWired\033[%1.fCInactive\033[%1.fCFree\n",
-        loop_a - 7, loop_w - 6, loop_i - 8);
+    //printf("Active\033[%1.fCWired\033[%1.fCInactive\033[%dCFree\n",loop_a - 7, loop_w - 6, width - 34);
 
     /*
         wired is red \e[41m
@@ -96,30 +88,25 @@ size_t getTotalSystemMemory()
 }
 
 int main(int argc, char const *argv[]) {
-
-    vm_size_t pagesize = getPageSize();
-    mach_port_t mach_port = mach_host_self();
-    mach_msg_type_number_t count = HOST_VM_INFO_COUNT;
+    vm_size_t pagesize = sysconf(_SC_PAGE_SIZE);
     vm_statistics64_data_t vm_stat;
-    double unit = 1024 << 10; /* 1024 * 1024 */
+    uint64_t unit = 1024 << 10; /* 1024 * 1024 */
     
-    if (KERN_SUCCESS == host_statistics64(mach_port, HOST_VM_INFO,
-                                        (host_info64_t)&vm_stat, &count)) {
- 
-        double active = vm_stat.active_count * pagesize / unit; // Pages active
-        double inactive = vm_stat.inactive_count * pagesize / unit; // Pages inactive
-        double wired = vm_stat.wire_count * pagesize / unit; // Pages wired down
-        double speculative = vm_stat.speculative_count * pagesize / unit;
-        double free = vm_stat.free_count * pagesize / unit;
-        double compressor = vm_stat.compressor_page_count * pagesize / unit;
-        double unused = free + speculative;
+    vmdata.next = NULL;
+    vm_stat = getVMinfo();
 
-        double total = wired + active + inactive + compressor + unused;
-        printf("total: %1.fMB\n", total);
+    vmdata.active = vm_stat.active_count * pagesize / unit; // Pages active
+    vmdata.inactive = vm_stat.inactive_count * pagesize / unit; // Pages inactive
+    vmdata.wired = vm_stat.wire_count * pagesize / unit; // Pages wired down
+    vmdata.speculative = vm_stat.speculative_count * pagesize / unit; // Pages speculative
+    vmdata.free = vm_stat.free_count * pagesize / unit; // Pages free
+    vmdata.compressor = vm_stat.compressor_page_count * pagesize / unit; // Pages occupied by compressor
+    vmdata.unused = vmdata.free - vmdata.speculative;
 
-        MemoryStatus(&active, &wired, &inactive, &unused, &total);
-        
-    }
+    double total = vmdata.active + vmdata.active + vmdata.inactive + vmdata.compressor + vmdata.unused;
+    printf("total: %1.fMB\n", total);
+
+    MemoryStatus(vmdata.active, vmdata.wired, vmdata.inactive, vmdata.unused, total);
 
     return 0;
 }
