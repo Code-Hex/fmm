@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <unistd.h> // page size
+#include <sys/syscall.h> // purge
 #include <sys/sysctl.h> // total size
 #include <sys/ioctl.h> // terminal width
 #include "fmm.h"
@@ -20,23 +21,22 @@ typedef struct vm {
     double free; // Pages free
     double compressor; // Pages occupied by compressor
     double unused; // free - speculative
+    double total;
     struct vm *next;
 } data64_vm;
 
 data64_vm vmdata;
 
 static 
-vm_statistics64_data_t getVMinfo() {
-    vm_statistics64_data_t vm_stat;
+void getVMinfo(vm_statistics64_t stat) {
     mach_port_t mach_port = mach_host_self();
-    mach_msg_type_number_t count = HOST_VM_INFO_COUNT;
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
 
     if (KERN_SUCCESS != host_statistics64(mach_port, HOST_VM_INFO,
-                                        (host_info64_t)&vm_stat, &count)) {
+                                        (host_info64_t)stat, &count)) {
         perror("host_statistics64");
         exit(-1);
     }
-    return vm_stat;
 }
 
 int getWidth() {
@@ -49,28 +49,33 @@ int getWidth() {
     return (0 < ws.ws_col && ws.ws_col == (int)ws.ws_col) ? ws.ws_col : LINE_LENGTH;
 }
 
-void MemoryStatus(double a, double w, double i, double c, double u, double t) {
+void MemoryStatus() {
 
     int width = getWidth();
+    double a = vmdata.active;
+    double w = vmdata.wired;
+    double i = vmdata.inactive;
+    double c = vmdata.compressor;
+    double u = vmdata.unused;
+    double t = vmdata.total;
+
     double loop_a = a / t * width;
     double loop_w = w / t * width;
     double loop_i = i / t * width;
     double loop_c = c / t * width;
     double loop_u = u / t * width;
-    printf("%1.f\n", loop_u + loop_i + loop_w + loop_a + loop_c);
-    printf("\e[43m\e[97mActive  : %*.fMB\e[49m "
-           "\e[41m\e[97mWired   : %*.fMB\e[49m "
-           "\e[44m\e[97minactive: %*.fMB\e[49m "
-           "\e[45m\e[97mcompress: %*.fMB\e[49m "
-           "\e[42m\e[97mFree    : %*.fMB\e[49m\n", 4, a, 4, w, 4, i, 4, c, 4, u);
-
+    printf("\e[43m  \e[49m Active  : %*.fMB\n"
+           "\e[41m  \e[49m Wired   : %*.fMB\n"
+           "\e[44m  \e[49m inactive: %*.fMB\n"
+           "\e[45m  \e[49m compress: %*.fMB\n"
+           "\e[42m  \e[49m Free    : %*.fMB\n\e[49m\n", 4, a, 4, w, 4, i, 4, c, 4, u);
     printf("\e[43m%*s", (int)loop_a, " ");
     printf("\e[41m%*s", (int)loop_w, " ");
     printf("\e[44m%*s", (int)loop_i, " ");
     printf("\e[45m%*s", (int)loop_c, " ");
+    int total = (int)loop_u + (int)loop_c + (int)loop_w + (int)loop_i + (int)loop_a;
+    while (width > ++total) printf(" ");
     printf("\e[42m%*s\e[49m\n", (int)loop_u, " ");
-
-    //printf("Active\033[%1.fCWired\033[%1.fCInactive\033[%dCFree\n",loop_a - 7, loop_w - 6, width - 34);
 
     /*
         wired is red \e[41m
@@ -84,20 +89,29 @@ void MemoryStatus(double a, double w, double i, double c, double u, double t) {
     */
 }
 
-size_t getTotalSystemMemory()
-{
+void purge() {
+    printf("purged:\n");
+    int result = syscall(SYS_vfs_purge);
+    if (result) {
+        perror("Unable to purge disk buffers");
+        exit(-1);
+    }
+}
+
+size_t getTotalSystemMemory() {
     long pages = sysconf(_SC_PHYS_PAGES);
     long page_size = sysconf(_SC_PAGE_SIZE);
     return pages * page_size;
 }
 
-int main(int argc, char const *argv[]) {
+
+void getStatus() {
     vmdata.pagesize = sysconf(_SC_PAGE_SIZE);
     vm_statistics64_data_t vm_stat;
     uint64_t unit = 1024 << 10; /* 1024 * 1024 */
     
     vmdata.next = NULL;
-    vm_stat = getVMinfo();
+    getVMinfo(&vm_stat);
 
     vmdata.active = vm_stat.active_count * vmdata.pagesize / unit; // Pages active
     vmdata.inactive = vm_stat.inactive_count * vmdata.pagesize / unit; // Pages inactive
@@ -106,20 +120,66 @@ int main(int argc, char const *argv[]) {
     vmdata.free = vm_stat.free_count * vmdata.pagesize / unit; // Pages free
     vmdata.compressor = vm_stat.compressor_page_count * vmdata.pagesize / unit; // Pages occupied by compressor
     vmdata.unused = vmdata.free - vmdata.speculative;
+    vmdata.total = vmdata.active + vmdata.wired + vmdata.inactive + vmdata.compressor + vmdata.unused;
+}
 
-    double total = vmdata.active + vmdata.wired + vmdata.inactive + vmdata.compressor + vmdata.unused;
-    printf("total: %1.fMB\n", total);
+void usage() {
+    fprintf(stderr, "Usage: fmm [options]\n"
+            "  fmm is friendly memory monitoring tool.\n"
+            "  Options include:\n"
+            "  -l <loop>             - show status for per second\n"
+            "  -p <purge>            - use purge for you must become root user\n"
+            "  \n"
+           );
+    exit(0);
+}
 
-    MemoryStatus(vmdata.active, vmdata.wired, vmdata.inactive, vmdata.compressor, vmdata.unused, total);
+void loopStatus() {
+    while (1) {
+        system("clear");
+        printf("Exit on ^C\n\n");
+        getStatus();
+        MemoryStatus();
+        sleep(1);
+    }
+}
 
+int main(int argc, char * const argv[]) {
+    int opt;
+    while ((opt = getopt(argc, argv, "hkpl")) != 1) {
+        switch (opt) {
+            case 'h':
+                usage();
+            case 'k':
+                exit(0); // show like top and kill pid
+            case 'p':
+                getStatus();
+                MemoryStatus();
+                purge();
+                sleep(1);
+                getStatus();
+                MemoryStatus();
+                exit(0);
+            case 'l':
+                loopStatus();
+                break;
+            default:
+                getStatus();
+                MemoryStatus();
+                exit(0);
+        }
+
+    }
     return 0;
 }
 
 /*
     How to calculate total physical memory 
     http://opensource.apple.com/source/top/top-100.1.2/globalstats.c
+
     Look up this
     http://www.opensource.apple.com/source/xnu/xnu-1456.1.26/osfmk/mach/vm_statistics.h
+
     double free = (vm_stat.free_count - vm_stat.speculative_count) * pagesize / unit; // Pages free
     double decompressions = vm_stat.decompressions; // Decompressions
     double compressions = vm_stat.compressions; // Compressions
