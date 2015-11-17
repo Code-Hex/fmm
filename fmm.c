@@ -139,7 +139,7 @@ void loopStatus() {
         printf("Exit on ^C\n\n");
         getStatus();
         MemoryStatus();
-        sleep(1);
+        sleep(2);
     }
 }
 
@@ -150,24 +150,24 @@ int main(int argc, char * const argv[]) {
             case 'h':
                 usage();
             case 'k':
-                exit(0); // show like top and kill pid
+                goto EXIT; // show like top and kill pid
             case 'p':
                 getStatus();
                 MemoryStatus();
                 purge();
                 getStatus();
                 MemoryStatus();
-                exit(0);
+                goto EXIT;
             case 'l':
                 loopStatus();
                 break;
             default:
                 getStatus();
                 MemoryStatus();
-                exit(0);
+                goto EXIT;
         }
-
     }
+EXIT:
     return 0;
 }
 
