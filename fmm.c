@@ -22,7 +22,6 @@ typedef struct vm {
     double compressor; // Pages occupied by compressor
     double unused; // free - speculative
     double total;
-    struct vm *next;
 } data64_vm;
 
 data64_vm vmdata;
@@ -96,6 +95,7 @@ void purge() {
         perror("Unable to purge disk buffers");
         exit(-1);
     }
+    sleep(1);
 }
 
 size_t getTotalSystemMemory() {
@@ -110,7 +110,6 @@ void getStatus() {
     vm_statistics64_data_t vm_stat;
     uint64_t unit = 1024 << 10; /* 1024 * 1024 */
     
-    vmdata.next = NULL;
     getVMinfo(&vm_stat);
 
     vmdata.active = vm_stat.active_count * vmdata.pagesize / unit; // Pages active
@@ -156,7 +155,6 @@ int main(int argc, char * const argv[]) {
                 getStatus();
                 MemoryStatus();
                 purge();
-                sleep(1);
                 getStatus();
                 MemoryStatus();
                 exit(0);
